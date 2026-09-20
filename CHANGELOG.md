@@ -1,6 +1,6 @@
 # Changelog - MitM MFT Collector
 
-## [v1.0.0] - 2026-09-19
+## [v0.1.0] - 2026-09-19
 
 ### Added
 - **MFT Collector**: Initial implementation in Go 1.26.5 to securely collect files (e.g. CSV) from remote SFTP servers.
