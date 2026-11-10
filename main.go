@@ -47,7 +47,7 @@ import (
 var (
 	appName        = "MFT Collector"
 	appDescription = "Extracts data from MFT/SFTP endpoints"
-	version        = "1.0.0"
+	version        = "1.0.1"
 )
 
 type TargetDBConfig struct {
@@ -143,6 +143,13 @@ func (c *IPCClient) SendAudit(message string) {
 	_, _ = conn.Write(append(data, '\n'))
 }
 
+// fatal reports a fatal error to the scheduler as status event and job audit entry, then exits with code 1
+func fatal(ipc *IPCClient, msg string) {
+	ipc.SendEvent("failed", msg, 0)
+	ipc.SendAudit("ERROR: " + msg)
+	log.Fatal(msg)
+}
+
 func main() {
 	if dbCfg, masterKey, err := fetchCredentialsFromScheduler(); err == nil {
 		if dbCfg != "" {
@@ -187,7 +194,7 @@ func main() {
 			} `json:"db"`
 		}
 		if err := json.Unmarshal([]byte(jsonConfig), &fullCfg); err != nil {
-			log.Fatalf("Failed to parse MitM JSON configuration: %v", err)
+			fatal(ipc, fmt.Sprintf("Failed to parse MitM JSON configuration: %v", err))
 		}
 		targetCfg.Host = fullCfg.DB.Host
 		targetCfg.Port = fullCfg.DB.Port
@@ -210,7 +217,7 @@ func main() {
 	}
 
 	if targetCfg.Host == "" {
-		log.Fatal("MitM database credentials not found in environment")
+		fatal(ipc, "MitM database credentials not found in environment")
 	}
 
 	topicName := "mft.data"
@@ -228,6 +235,8 @@ func main() {
 			if colArgs.BusinessKeyColumn != "" {
 				businessKeyCol = colArgs.BusinessKeyColumn
 			}
+		} else {
+			fatal(ipc, fmt.Sprintf("Failed to parse collector arguments: %v", err))
 		}
 	}
 
@@ -255,18 +264,18 @@ func main() {
 
 	configMitmPool, err := pgxpool.ParseConfig(mitmDSN)
 	if err != nil {
-		log.Fatalf("Failed to parse DB config: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to parse DB config: %v", err))
 	}
 	mitmPool, err := pgxpool.NewWithConfig(ctx, configMitmPool)
 	if err != nil {
-		log.Fatalf("Failed to connect to MitM database: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to connect to MitM database: %v", err))
 	}
 	defer mitmPool.Close()
 
 	masterKey := os.Getenv("MASTER_KEY")
 	kek, err := validateKEK(masterKey)
 	if err != nil {
-		log.Fatalf("%v", err)
+		fatal(ipc, err.Error())
 	}
 
 	var configPayload []byte
@@ -280,7 +289,7 @@ func main() {
 		LIMIT 1
 	`, targetCfg.SourceName).Scan(&configPayload, &credentialsNonce, &dekID)
 	if err != nil {
-		log.Fatalf("Failed to load source credentials: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to load source credentials: %v", err))
 	}
 
 	var wrappedKey []byte
@@ -291,29 +300,44 @@ func main() {
 		LIMIT 1
 	`, dekID).Scan(&wrappedKey)
 	if err != nil {
-		log.Fatalf("Failed to load wrapped DEK: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to load wrapped DEK: %v", err))
 	}
 
+	if len(wrappedKey) < 12 {
+		fatal(ipc, "Wrapped DEK is too short")
+	}
 	dekNonce := wrappedKey[:12]
 	wrappedCipher := wrappedKey[12:]
 
 	kekBlock, err := aes.NewCipher(kek)
+	if err != nil {
+		fatal(ipc, fmt.Sprintf("Failed to initialize AES cipher with KEK: %v", err))
+	}
 	kekGCM, err := cipher.NewGCM(kekBlock)
+	if err != nil {
+		fatal(ipc, fmt.Sprintf("Failed to initialize GCM with KEK: %v", err))
+	}
 	dek, err := kekGCM.Open(nil, dekNonce, wrappedCipher, nil)
 	if err != nil {
-		log.Fatalf("Failed to decrypt DEK: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to decrypt DEK: %v", err))
 	}
 
 	dekBlock, err := aes.NewCipher(dek)
+	if err != nil {
+		fatal(ipc, fmt.Sprintf("Failed to initialize AES cipher with DEK: %v", err))
+	}
 	dekGCM, err := cipher.NewGCM(dekBlock)
+	if err != nil {
+		fatal(ipc, fmt.Sprintf("Failed to initialize GCM with DEK: %v", err))
+	}
 	decryptedConfigBytes, err := dekGCM.Open(nil, credentialsNonce, configPayload, nil)
 	if err != nil {
-		log.Fatalf("Failed to decrypt MFT config: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to decrypt MFT config: %v", err))
 	}
 
 	var mftCfg MFTConfig
 	if err := json.Unmarshal(decryptedConfigBytes, &mftCfg); err != nil {
-		log.Fatalf("Failed to parse decrypted MFT configuration: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to parse decrypted MFT configuration: %v", err))
 	}
 
 	if mftCfg.Port == 0 {
@@ -341,13 +365,13 @@ func main() {
 
 	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", mftCfg.Host, mftCfg.Port), sshConfig)
 	if err != nil {
-		log.Fatalf("Failed to dial SSH: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to dial SSH: %v", err))
 	}
 	defer conn.Close()
 
 	sftpClient, err := sftp.NewClient(conn)
 	if err != nil {
-		log.Fatalf("Failed to start SFTP: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to start SFTP: %v", err))
 	}
 	defer sftpClient.Close()
 
@@ -358,7 +382,7 @@ func main() {
 
 	files, err := sftpClient.ReadDir(mftCfg.RemoteDir)
 	if err != nil {
-		log.Fatalf("Failed to read remote directory: %v", err)
+		fatal(ipc, fmt.Sprintf("Failed to read remote directory: %v", err))
 	}
 
 	recordsIngested := 0
