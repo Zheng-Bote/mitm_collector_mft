@@ -47,7 +47,7 @@ import (
 var (
 	appName        = "MFT Collector"
 	appDescription = "Extracts data from MFT/SFTP endpoints"
-	version        = "1.0.1"
+	version        = "0.1.2"
 )
 
 type TargetDBConfig struct {
