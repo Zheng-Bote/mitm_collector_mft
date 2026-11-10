@@ -1,13 +1,13 @@
 # Changelog - MitM MFT Collector
 
-## [v1.0.1] - 2026-11-10
+## [v0.1.2] - 2026-11-10
 
 ### Fixed
 - All fatal errors are now sent both as `failed` status event and as audit event (`ERROR: <message>`) to the scheduler, so they appear in `job_audit_logs`.
 - Unparsable collector arguments (JSON in `os.Args[1]`) now abort the run with an error instead of continuing with default values.
 - Wrapped DEK length and all cipher initializations are checked; invalid key data no longer causes a panic.
 
-## [v1.0.0] - 2026-09-19
+## [v0.1.0] - 2026-09-19
 
 ### Added
 - **MFT Collector**: Initial implementation in Go 1.26.5 to securely collect files (e.g. CSV) from remote SFTP servers.
